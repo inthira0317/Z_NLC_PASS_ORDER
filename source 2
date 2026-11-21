@@ -1,0 +1,513 @@
+
+*&---------------------------------------------------------------------*
+
+FUNCTION zmm_daily_status.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     VALUE(IM_DATE) TYPE  DATS
+*"  TABLES
+*"      ET_PR_STATUS TYPE  ZMM_PR_DAILY_STATUS_T OPTIONAL
+*"      IT_PG TYPE  ZSO_PG_T OPTIONAL
+*"      ET_PR TYPE  ZMM_PR_DAILY_STATUS_T OPTIONAL
+*"----------------------------------------------------------------------
+
+
+
+  TYPES: BEGIN OF ty_cdhdr,
+           objectid TYPE banfn,
+           changenr TYPE char10,
+*             udate
+         END OF ty_cdhdr,
+         BEGIN OF ty_cdpos,
+           objectid TYPE banfn,
+           changenr TYPE char10,
+           newval   TYPE fieldval,
+           oldval   TYPE fieldval,
+         END OF ty_cdpos,
+
+         BEGIN OF ty_eban,
+           banfn TYPE banfn,
+           ekgrp TYPE ekgrp,
+           frgst TYPE frgst,
+         END OF ty_eban,
+         BEGIN OF ty_ekgrp,
+           ekgrp TYPE ekgrp,
+           count TYPE i,
+         END OF ty_ekgrp,
+         BEGIN OF ty_ekko,
+           ebeln TYPE ebeln,
+         END OF ty_ekko,
+         BEGIN OF ty_collect,
+           ekgrp TYPE ekgrp,
+           banfn TYPE banfn,
+           zin   TYPE numc5,
+           zrej  TYPE numc5,
+           zfin  TYPE numc5,
+           zrfq  TYPE numc5,
+           zpo   TYPE numc5,
+         END OF ty_collect,
+         BEGIN OF ty_txt,
+           banfn TYPE banfn,
+           txz01 TYPE  char100, "eban-txz01,                           " Material Description
+           rlwrt TYPE  eban-rlwrt,
+         END OF ty_txt.
+
+
+  DATA: gt_cdhdr    TYPE TABLE OF ty_cdhdr,
+        gt_cdpos    TYPE TABLE OF ty_cdpos,
+        gt_cdhdr_po TYPE TABLE OF ty_cdhdr,
+        gs_cdhdr    TYPE ty_cdhdr,
+        gs_cdpos    TYPE ty_cdpos,
+        gt_eban     TYPE TABLE OF ty_eban,
+        gs_eban     TYPE ty_eban,
+        gt_ekko     TYPE TABLE OF ty_ekgrp,
+        gt_rfq      TYPE TABLE OF ty_ekgrp,
+        gs_ekgrp    TYPE ty_ekgrp,
+        gt_collect  TYPE TABLE OF zmm_pr_daily_status,
+        gt_output   TYPE TABLE OF zmm_pr_daily_status,
+        gs_collect  TYPE zmm_pr_daily_status,
+        gt_po       TYPE TABLE OF ty_ekko,
+        gs_po       TYPE ty_ekko,
+        gt_po_fin   TYPE TABLE OF ty_ekgrp.
+
+
+
+    DATA: gt_txt TYPE TABLE OF ty_txt,
+        gs_txt TYPE ty_txt.
+  DATA: gv_tdname TYPE tdobname,
+        gv_lines  TYPE i,
+        gs_lines  TYPE tline,
+        gt_lines  TYPE TABLE OF tline,
+        gv_txt    TYPE char100,
+        gv_name   TYPE char10.
+
+
+  RANGES :   r_pg     FOR eban-ekgrp,
+             r_pr     FOR eban-banfn,
+             r_doc    FOR cdhdr-changenr,
+             r_po     FOR ekko-ebeln,
+             r_doc2   FOR cdhdr-changenr,
+             r_po2    FOR ekko-ebeln.
+************************Convertion of Pruchasing group input table into ranges **************************
+  LOOP AT it_pg .
+    r_pg-sign = 'I'.
+    r_pg-option = 'EQ'.
+
+    r_pg-low = it_pg-zpg.
+    APPEND r_pg.
+  ENDLOOP.
+
+
+*********************Selecting the PR number from CDHDR table for which approval done on the input date ***
+  SELECT            objectid
+                    changenr
+*           udate
+                     FROM cdhdr INTO TABLE gt_cdhdr
+     WHERE objectclas EQ 'BANF'
+                      AND udate EQ im_date
+                      AND tcode EQ 'ME54N' .
+
+
+  IF sy-subrc IS INITIAL.
+    SORT gt_cdhdr by objectid changenr.
+    DELETE ADJACENT DUPLICATES FROM gt_cdhdr COMPARING objectid  changenr.
+************************Convertion of objectid into ranges *************************************************
+    LOOP AT gt_cdhdr INTO gs_cdhdr.
+      r_pr-sign = 'I'.
+      r_pr-option = 'EQ'.
+      r_pr-low = gs_cdhdr-objectid.
+      APPEND r_pr.
+      r_doc-sign = 'I'.
+      r_doc-option = 'EQ'.
+      r_doc-low = gs_cdhdr-changenr.
+      APPEND r_doc.
+    ENDLOOP.
+**************************Selecting the Data from CDPOS table corresponding to CDHDR data-PR release*********
+    SELECT          objectid
+                    changenr
+                    value_new
+                    value_old
+  FROM cdpos INTO TABLE gt_cdpos
+  WHERE objectclas EQ 'BANF'
+                   AND objectid IN r_pr
+                   AND changenr IN r_doc
+                   AND tabname  EQ 'EBAN'
+                   AND fname    EQ 'FRGZU' .
+      SORT gt_cdpos by objectid changenr newval oldval.
+      DELETE ADJACENT DUPLICATES FROM gt_cdpos COMPARING objectid changenr newval oldval.
+
+
+  ENDIF.
+***********************Selecting the PO release details from CDHDR table ************************************
+  SELECT    objectid
+            changenr
+            FROM cdhdr INTO TABLE gt_cdhdr_po
+     WHERE objectclas EQ 'EINKBELEG'
+                      AND udate EQ im_date
+                      AND tcode EQ 'ME29N'
+                      AND objectid NOT LIKE '1%'.
+  DELETE ADJACENT DUPLICATES FROM gt_cdhdr_po.
+  IF gt_cdhdr_po IS NOT INITIAL.
+**********************Convertion of PO/object id into ranges *********************************************
+    LOOP AT gt_cdhdr_po INTO gs_cdhdr.
+      r_po-sign = 'I'.
+      r_po-option = 'EQ'.
+      r_po-low = gs_cdhdr-objectid.
+      APPEND r_po.
+      r_doc2-sign = 'I'.
+      r_doc2-option = 'EQ'.
+      r_doc2-low = gs_cdhdr-changenr.
+      APPEND r_doc2.
+    ENDLOOP.
+**************************Selecting the Data from CDPOS table corresponding to CDHDR data for PO release******
+    SELECT
+             objectid
+     FROM cdpos INTO TABLE gt_po
+     WHERE objectclas EQ 'EINKBELEG'
+                  AND value_new EQ 'XXXXX'
+                  AND objectid IN r_po
+                  AND changenr IN r_doc2
+                  AND fname EQ 'FRGZU'.
+
+    DELETE ADJACENT DUPLICATES FROM gt_po.
+  ENDIF.
+
+************************Convertion of PO into ranges *********************************************************
+  IF gt_po IS NOT INITIAL.
+
+    LOOP AT  gt_po INTO gs_po.
+      r_po2-sign = 'I'.
+      r_po2-option = 'EQ'.
+      r_po2-low = gs_po-ebeln.
+      APPEND r_po2.
+    ENDLOOP.
+  ENDIF.
+
+*************Get the data Purchase group, Value (above or below 5 lac) from EBAN table for PR *****************
+IF r_pr IS NOT INITIAL.
+    SELECT banfn
+           ekgrp
+           frgst
+           FROM eban INTO TABLE gt_eban
+           WHERE ekgrp IN r_pg
+           AND ( frgst EQ 'S0'
+           OR    frgst EQ 'S2'
+           OR    frgst EQ 'S3'
+           OR    frgst EQ 'S4'
+           OR    frgst EQ 'S5'
+           OR    frgst EQ 'S6'  )
+           AND   ekgrp IN ( 'M01' , 'M02' , 'M03' , 'M04' , 'M05' ,
+                       'M06' , 'M07' , 'M08' , 'M09' , 'M10' ,
+                       'M11' , 'M12' , 'M13' , 'M14' , 'M15' ,
+                       'M16' , 'M17' , 'M18' , 'M19' , 'M20' ,
+                       'M21' , 'M22' , 'M23' , 'M24' , 'M25' )
+           AND banfn IN r_pr .
+  ENDIF.
+  DELETE ADJACENT DUPLICATES FROM gt_eban.
+
+
+
+
+
+  LOOP AT gt_cdpos INTO gs_cdpos.
+    READ TABLE gt_eban INTO gs_eban WITH  KEY banfn = gs_cdpos-objectid.
+    IF sy-subrc IS INITIAL.
+      CASE gs_cdpos-newval.
+        WHEN ' ' or 'X' OR 'XX'.
+          IF ( gs_cdpos-oldval EQ 'XXXX' AND
+                 ( gs_eban-frgst EQ 'S2'     OR
+                   gs_eban-frgst EQ 'S3'     OR
+                   gs_eban-frgst EQ 'S4'     OR
+                   gs_eban-frgst EQ 'S6' ) ) OR
+                 ( gs_cdpos-oldval EQ 'XXX' AND
+                 ( gs_eban-frgst EQ 'S0'     OR
+                   gs_eban-frgst EQ 'S5' ) ) OR
+            ( gs_cdpos-oldval EQ 'XXXX'      OR
+               gs_cdpos-oldval EQ 'XXXXX'    OR
+               gs_cdpos-oldval EQ 'XXXXXX'   OR
+               gs_cdpos-oldval EQ 'XXXXXXX' ) .
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zrej = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+
+          ENDIF.
+        WHEN 'XXX'.
+          IF ( gs_eban-frgst EQ 'S0'   OR
+               gs_eban-frgst EQ 'S5' ) AND
+                                       (  gs_cdpos-oldval EQ ' ' OR
+                                          gs_cdpos-oldval EQ 'X' OR
+                                          gs_cdpos-oldval EQ 'XX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zin = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ELSEIF ( gs_eban-frgst EQ 'S0'   OR
+                   gs_eban-frgst EQ 'S5' ) AND ( gs_cdpos-oldval EQ 'XXXX' OR
+                                                 gs_cdpos-oldval EQ 'XXXXX' OR
+                                                 gs_cdpos-oldval EQ 'XXXXXX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zrej = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ENDIF.
+        WHEN 'XXXX'.
+          IF ( gs_eban-frgst EQ 'S2'   OR
+               gs_eban-frgst EQ 'S3'   OR
+               gs_eban-frgst EQ 'S4'   OR
+               gs_eban-frgst EQ 'S6'  ) AND ( gs_cdpos-oldval EQ 'XXX'  OR
+                                              gs_cdpos-oldval EQ ' '    OR
+                                              gs_cdpos-oldval EQ 'X'    OR
+                                              gs_cdpos-oldval EQ 'XX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zin = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ELSEIF  ( gs_eban-frgst EQ 'S2'   OR
+                    gs_eban-frgst EQ 'S3'   OR
+                    gs_eban-frgst EQ 'S4'   OR
+                    gs_eban-frgst EQ 'S6'  ) AND (  gs_cdpos-oldval EQ 'XXXX'   OR
+                                                    gs_cdpos-oldval EQ 'XXXXX'  OR
+                                                    gs_cdpos-oldval EQ 'XXXXXX' OR
+                                                    gs_cdpos-oldval EQ 'XXXXXXX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zrej = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ENDIF.
+        WHEN 'XXXXX'.
+          IF ( gs_eban-frgst EQ 'S5' ) AND ( gs_cdpos-oldval EQ 'XXXX' OR
+                                         gs_cdpos-oldval EQ 'XXX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zfin = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ENDIF.
+        WHEN 'XXXXXX'.
+          IF  ( gs_eban-frgst EQ 'S0'   OR
+                gs_eban-frgst EQ 'S6' ) AND ( gs_cdpos-oldval EQ 'XXXXX' OR
+                                         gs_cdpos-oldval EQ 'XXXX'       OR
+                                         gs_cdpos-oldval EQ 'XXX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zfin = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ENDIF.
+        WHEN 'XXXXXXX'.
+          IF ( gs_eban-frgst EQ 'S2'          OR
+                    gs_eban-frgst EQ 'S3'     OR
+                    gs_eban-frgst EQ 'S4'   ) AND ( gs_cdpos-oldval EQ 'XXXXXX' OR
+                                                    gs_cdpos-oldval EQ 'XXXXX'  OR
+                                                    gs_cdpos-oldval EQ 'XXXX' ).
+            gs_collect-ekgrp = gs_eban-ekgrp.
+            gs_collect-zfin = 1.
+            gs_collect-banfn = gs_eban-banfn.
+            APPEND gs_collect TO gt_collect.
+          ENDIF.
+*          WHEN OTHERS.
+      ENDCASE.
+
+    ENDIF.
+    CLEAR: gs_collect, gs_eban.
+  ENDLOOP.
+
+***Get the data from Table EKKO- Purchase group and EKET-PR number for the RFQ created PR on the input date***
+  SELECT
+       a~ekgrp,
+       0 AS zin,
+       0 AS zrej,
+       0 AS zfin,
+       1 AS zrfq,
+       0 AS zpo_c,
+       0 AS zpo_f,
+       b~banfn
+       FROM ekko AS a
+       INNER JOIN
+       eket AS b ON
+       a~ebeln EQ b~ebeln
+       APPENDING TABLE @gt_collect
+       WHERE a~aedat EQ @im_date
+       AND   b~banfn NE ' '
+       AND   a~bstyp EQ 'A'
+       AND   a~ekgrp IN @r_pg
+       AND   a~ekgrp IN ( 'M01' , 'M02' , 'M03' , 'M04' , 'M05' ,
+                         'M06' , 'M07' , 'M08' , 'M09' , 'M10' ,
+                         'M11' , 'M12' , 'M13' , 'M14' , 'M15' ,
+                         'M16' , 'M17' , 'M18' , 'M19' , 'M20' ,
+                         'M21' , 'M22' , 'M23' , 'M24' , 'M25' ).
+
+
+***Get the data from Table EKKO- Purchase group and EKPO-PR number for the PO created PR on the input date***
+  SELECT
+        a~ekgrp,
+        0 AS zin,
+        0 AS zrej,
+        0 AS zfin,
+        0 AS zrfq,
+        1 AS zpo_c,
+        0 AS zpo_f,
+        b~banfn
+        FROM ekko AS a
+        INNER JOIN
+        ekpo AS b ON
+        a~ebeln EQ b~ebeln
+        APPENDING TABLE @gt_collect
+        WHERE a~aedat EQ @im_date
+        AND   b~banfn NE ' '
+        AND   a~ekgrp IN ( 'M01' , 'M02' , 'M03' , 'M04' , 'M05' ,
+                          'M06' , 'M07' , 'M08' , 'M09' , 'M10' ,
+                          'M11' , 'M12' , 'M13' , 'M14' , 'M15' ,
+                          'M16' , 'M17' , 'M18' , 'M19' , 'M20' ,
+                          'M21' , 'M22' , 'M23' , 'M24' , 'M25' ).
+
+***Get the data from Table EKKO- Purchase group and EKPO-PR number for the PO final relased-PR on the input date***
+  IF r_po2 IS NOT INITIAL.
+    SELECT
+     a~ekgrp,
+     0 AS zin,
+     0 AS zrej,
+     0 AS zfin,
+     0 AS zrfq,
+     0 AS zpo_c,
+     1 AS zpo_f,
+     b~banfn
+     FROM ekko AS a
+     INNER JOIN
+     ekpo AS b ON
+     a~ebeln EQ b~ebeln
+     APPENDING TABLE @gt_collect
+     WHERE a~ebeln IN @r_po2
+     AND   b~banfn NE ' '
+     AND   a~ekgrp IN ( 'M01' , 'M02' , 'M03' , 'M04' , 'M05' ,
+                       'M06' , 'M07' , 'M08' , 'M09' , 'M10' ,
+                       'M11' , 'M12' , 'M13' , 'M14' , 'M15' ,
+                       'M16' , 'M17' , 'M18' , 'M19' , 'M20' ,
+                       'M21' , 'M22' , 'M23' , 'M24' , 'M25' ).
+  ENDIF.
+
+  SORT gt_collect BY banfn.
+  DELETE ADJACENT DUPLICATES FROM gt_collect COMPARING zin zrej zfin zrfq zpo_c zpo_c zpo_f banfn.
+
+***********************************************************************************
+  IF gt_collect IS NOT INITIAL.
+
+    SELECT banfn
+           txz01
+           rlwrt
+           FROM  eban
+           INTO TABLE gt_txt
+           FOR ALL ENTRIES IN gt_collect
+           WHERE banfn = gt_collect-banfn.
+
+  SORT gt_txt BY   banfn rlwrt DESCENDING .
+  DELETE ADJACENT DUPLICATES FROM gt_txt COMPARING banfn.
+  ENDIF.
+***********************************************************************************
+
+  SORT gt_collect BY ekgrp.
+*  et_pr_status[] = gt_collect[].
+  DATA:
+    zin   TYPE i,
+    zfin  TYPE i,
+    zrej  TYPE i,
+    zpo_c TYPE i,
+    zpo_f TYPE i,
+    zrfq  TYPE i.
+  LOOP AT gt_collect INTO gs_collect.
+
+*    ******************************************************************************************************
+      gv_tdname = gs_collect-banfn.
+    CALL FUNCTION 'READ_TEXT'
+  EXPORTING
+   CLIENT                        = SY-MANDT
+    id                            = 'B01'
+    language                      = sy-langu
+    NAME                          = gv_tdname "gs_collect-zpr_no
+    OBJECT                        = 'EBANH'
+*   ARCHIVE_HANDLE                = 0
+*   LOCAL_CAT                     = ' '
+* IMPORTING
+*   HEADER                        =
+*   OLD_LINE_COUNTER              =
+  TABLES
+    lines                         =  gt_lines
+ EXCEPTIONS
+   ID                            = 1
+   LANGUAGE                      = 2
+   NAME                          = 3
+   NOT_FOUND                     = 4
+   OBJECT                        = 5
+   REFERENCE_CHECK               = 6
+   WRONG_ACCESS_TO_ARCHIVE       = 7
+   OTHERS                        = 8
+          .
+IF sy-subrc <> 0.
+* Implement suitable error handling here
+ENDIF.
+*  cl_demo_output=>display_data( gt_lines ).
+
+  LOOP AT gt_lines INTO gs_lines.
+    CONCATENATE gv_txt gs_lines+2(98) INTO gv_txt.
+    gv_lines = gv_lines + 1.
+    IF gv_lines = 2.
+     exit.
+    ENDIF.
+    ENDLOOP.
+
+    IF gv_txt is NOT INITIAL.
+       gs_collect-txz01 = gv_txt.
+       clear:gt_lines, gv_txt.
+    ELSE.
+      READ TABLE gt_txt INTO gs_txt with KEY banfn = gs_collect-banfn.
+      gs_collect-txz01 = gs_txt-txz01.
+      clear:gt_lines,  gs_txt.
+    ENDIF.
+    MODIFY gt_collect FROM gs_collect TRANSPORTING txz01.
+****************************************************************************************
+
+
+    zin   = gs_collect-zin + zin.
+    zfin  = gs_collect-zfin + zfin.
+    zrej  = gs_collect-zrej + zrej.
+    zrfq  = gs_collect-zrfq + zrfq.
+    zpo_c   = gs_collect-zpo_c + zpo_c.
+    zpo_f   = gs_collect-zpo_f + zpo_f.
+
+    AT END OF ekgrp.
+      gs_collect-zin    = zin.
+      gs_collect-zfin   = zfin.
+      gs_collect-zpo_c    = zpo_c.
+      gs_collect-zpo_f   = zpo_f.
+      gs_collect-zrej   = zrej.
+      gs_collect-zrfq   = zrfq.
+      CLEAR: gs_collect-banfn,gs_collect-txz01.
+      APPEND gs_collect TO gt_output.
+      CLEAR : gs_collect, zin, zfin, zpo_c, zpo_f, zrej, zrfq , gs_ekgrp.
+    ENDAT.
+
+  ENDLOOP.
+
+  et_pr[] = gt_output[].
+
+
+  et_pr_status[] = gt_collect[].
+
+
+
+
+
+
+ENDFUNCTION.
+*
+*   SELECT ekgrp
+*          COUNT(*)
+*          FROM ekko INTO TABLE gt_po_fin
+*          WHERE ebeln IN r_po2
+*          AND   ekgrp IN r_pg
+*          AND   ekgrp IN ( 'M01' , 'M02' , 'M03' , 'M04' , 'M05' ,
+*                     'M06' , 'M07' , 'M08' , 'M09' , 'M10' ,
+*                     'M11' , 'M12' , 'M13' , 'M14' , 'M15' ,
+*                     'M16' , 'M17' , 'M18' , 'M19' , 'M20' ,
+*                     'M21' , 'M22' , 'M23' , 'M24' , 'M25' )
+*          GROUP BY ekgrp.
