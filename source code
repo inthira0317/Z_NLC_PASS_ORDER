@@ -1,0 +1,295 @@
+*&---------------------------------------------------------------------*
+*& Report Z_NLC_PASS_ORDER
+*&---------------------------------------------------------------------*
+"08.09.2026 - creating the pass order"
+
+REPORT z_nlc_pass_order.
+
+PARAMETERS:
+  p_po_no  TYPE ekko-ebeln OBLIGATORY,
+  p_ses_no TYPE essr-lblni OBLIGATORY,
+  p_let_no type zst_nlc_pass_order-zletter_no OBLIGATORY.
+
+DATA: gs_data TYPE zst_nlc_pass_order.
+
+DATA: gs_ekko TYPE ekko,
+      gs_ekpo TYPE ekpo,
+      gs_lfa1 TYPE lfa1,
+      gs_essr type essr,
+
+      gs_rbkp TYPE rbkp,
+      gs_ekbe TYPE ekbe,
+      gs_rseg TYPE rseg.
+
+data: gt_essr type STANDARD TABLE OF essr.
+
+DATA: gv_fm_name1 TYPE rs38l_fnam,
+      gv_fm_name2 TYPE rs38l_fnam.
+
+START-OF-SELECTION.
+
+  PERFORM get_data.
+  PERFORM call_smartforms.
+
+
+
+FORM get_data.
+
+  "get the po purchasing document number details
+
+  SELECT SINGLE *
+    FROM ekko
+    INTO @gs_ekko
+    WHERE ebeln = @p_po_no.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'PO number does not exist' TYPE 'E'.
+  ENDIF.
+
+* get the ses details
+
+  SELECT SINGLE *
+    FROM essr
+    INTO @gs_essr
+    WHERE lblni = @p_ses_no
+      AND ebeln = @p_po_no.
+
+ APPEND GS_ESSR TO GT_ESSR.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'SES number does not belong to the entered PO'
+            TYPE 'E'.
+  ENDIF.
+
+  SELECT SINGLE *
+    FROM ekpo
+    INTO @gs_ekpo
+    WHERE ebeln = @p_po_no
+      AND ebelp = @gs_essr-ebelp.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'PO item not found' TYPE 'E'.
+  ENDIF.
+
+  " get the vendor details
+
+  SELECT SINGLE *
+    FROM lfa1
+    INTO @gs_lfa1
+    WHERE lifnr = @gs_ekko-lifnr.
+
+  IF sy-subrc = 0.
+    gs_data-zsupplier_name = gs_lfa1-name1. " vendor name
+  ENDIF.
+
+  gs_data-zletter_date = sy-datum. "letter date
+
+  gs_data-zsubject = gs_ekpo-txz01. " get the subject content
+
+  gs_data-zloannumber = gs_ekko-zloanumber. " loa number
+  gs_data-zloa_date   = gs_ekko-kdatb. " loa date
+
+  gs_data-zcontract_date = gs_ekko-bedat. " contract date
+  gs_data-zcontract_from = gs_ekko-kdatb. "  contract date starts from
+  gs_data-zcontract_to = gs_ekko-kdate. " contract date ends on
+
+  gs_data-zpo_no  = p_po_no. " purchasing document number
+  gs_data-zses_no = p_ses_no. " ses number
+
+  gs_data-zservice_from = gs_essr-lzvon. " service period for the particular month
+  gs_data-zservice_to   = gs_essr-lzbis.
+
+  gs_data-zamount = gs_essr-lwert.
+  gs_data-zinvoice_amount = gs_essr-netwr.
+
+  gs_data-zletter_no = p_let_no.
+
+*---------------------------------------------------------------------*
+* Invoice Details
+*---------------------------------------------------------------------*
+
+  CLEAR: gs_data-zinvoice_no,
+       gs_data-zinvoice_date.
+
+  SELECT SINGLE
+         rbkp~xblnr,
+         rbkp~bldat
+    FROM ekko
+    INNER JOIN ekbe
+      ON ekbe~ebeln = ekko~ebeln
+    INNER JOIN rbkp
+      ON rbkp~belnr = ekbe~belnr
+     AND rbkp~lifnr = ekko~lifnr
+    INTO (@gs_data-zinvoice_no,
+          @gs_data-zinvoice_date)
+    WHERE ekko~ebeln = @p_po_no
+      AND ekbe~lfbnr = @p_ses_no
+      AND ekbe~bewtp = 'Q'.
+
+  IF sy-subrc <> 0.
+    gs_data-zinvoice_no   =  gs_rbkp-xblnr.   " invoice reference number
+    gs_data-zinvoice_date = gs_rbkp-bldat. " invoice date
+  ENDIF.
+
+  " convert the number into words by using the spell function
+
+  DATA: lv_amount TYPE p DECIMALS 2,
+        lv_words  TYPE spell.
+
+  CLEAR: lv_amount,
+         lv_words,
+         gs_data-zamount_words.
+
+  lv_amount = gs_data-zinvoice_amount.
+
+  CALL FUNCTION 'SPELL_AMOUNT'
+    EXPORTING
+      amount    = lv_amount
+      currency  = 'INR'
+      language  = 'E'
+    IMPORTING
+      in_words  = lv_words
+    EXCEPTIONS
+      not_found = 1
+      too_large = 2
+      OTHERS    = 3.
+
+  IF sy-subrc = 0.
+    gs_data-zamount_words = lv_words-word.
+  ENDIF.
+
+*---------------------------------------------------------------------*
+* Contract Amount
+*---------------------------------------------------------------------*
+
+  CLEAR gs_data-zcontract_amount.
+  " TOTAL AMOUNT INCLUDED WITH GST
+
+  SELECT SINGLE konv~kawrt
+    FROM konv
+    INTO @gs_data-zcontract_amount
+    WHERE konv~knumv = @gs_ekko-knumv
+      AND konv~kschl = 'JEXS'.
+
+  IF sy-subrc <> 0.
+    CLEAR gs_data-zcontract_amount.
+  ENDIF.
+
+ENDFORM.
+
+FORM call_smartforms.
+
+  DATA: ls_control TYPE ssfctrlop,
+        ls_output  TYPE ssfcrescl.
+
+*---------------------------------------------------------------------*
+* Get Form 1 Function Module
+*---------------------------------------------------------------------*
+
+  CALL FUNCTION 'SSF_FUNCTION_MODULE_NAME'
+    EXPORTING
+      formname           = 'ZFS_NLC_PASS_ORDER'
+    IMPORTING
+      fm_name            = gv_fm_name1
+    EXCEPTIONS
+      no_form            = 1
+      no_function_module = 2
+      OTHERS             = 3.
+
+  IF sy-subrc <> 0.
+
+    MESSAGE 'Smart Form 1 could not be generated'
+            TYPE 'E'.
+
+  ENDIF.
+
+*---------------------------------------------------------------------*
+* FORM 1 - First Form
+*---------------------------------------------------------------------*
+
+  CLEAR ls_control.
+
+  ls_control-no_open   = space.
+  ls_control-no_close  = 'X'.
+  ls_control-preview   = 'X'.
+  ls_control-no_dialog = 'X'.
+  ls_control-device    = 'PRINTER'.
+
+  CLEAR ls_output.
+
+  CALL FUNCTION gv_fm_name1
+    EXPORTING
+      control_parameters = ls_control
+      is_data            = gs_data
+    IMPORTING
+      job_output_info    = ls_output
+    EXCEPTIONS
+      formatting_error   = 1
+      internal_error     = 2
+      send_error         = 3
+      user_canceled      = 4
+      OTHERS             = 5.
+
+  IF sy-subrc <> 0.
+
+    MESSAGE 'Error while executing Smart Form 1'
+            TYPE 'E'.
+
+  ENDIF.
+
+*---------------------------------------------------------------------*
+* Get Form 2 Function Module
+*---------------------------------------------------------------------*
+
+  CALL FUNCTION 'SSF_FUNCTION_MODULE_NAME'
+    EXPORTING
+      formname           = 'ZFS_NLC_PASS_ORDER2'
+    IMPORTING
+      fm_name            = gv_fm_name2
+    EXCEPTIONS
+      no_form            = 1
+      no_function_module = 2
+      OTHERS             = 3.
+
+  IF sy-subrc <> 0.
+
+    MESSAGE 'Smart Form 2 could not be generated'
+            TYPE 'E'.
+
+  ENDIF.
+
+*---------------------------------------------------------------------*
+* FORM 2 - Last Form
+*---------------------------------------------------------------------*
+
+  CLEAR ls_control.
+
+  ls_control-no_open   = 'X'.
+  ls_control-no_close  = space.
+  ls_control-preview   = 'X'.
+  ls_control-no_dialog = 'X'.
+  ls_control-device    = 'PRINTER'.
+
+  CLEAR ls_output.
+
+  CALL FUNCTION gv_fm_name2
+    EXPORTING
+      control_parameters = ls_control
+      is_data            = gs_data
+    IMPORTING
+      job_output_info    = ls_output
+    EXCEPTIONS
+      formatting_error   = 1
+      internal_error     = 2
+      send_error         = 3
+      user_canceled      = 4
+      OTHERS             = 5.
+
+  IF sy-subrc <> 0.
+
+    MESSAGE 'Error while executing Smart Form 2'
+            TYPE 'E'.
+
+  ENDIF.
+
+ENDFORM.
